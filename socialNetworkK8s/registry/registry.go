@@ -1,11 +1,16 @@
 package registry
 
 import (
+	"encoding/json"
+	"io/ioutil"
+	"flag"
+	"strconv"
 	"fmt"
 	"net"
 	"os"
-
+	"socialnetworkk8/tracing"
 	consul "github.com/hashicorp/consul/api"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/rs/zerolog/log"
 )
 
@@ -95,4 +100,48 @@ func (c *Client) Register(name string, id string, ip string, port int) error {
 // Deregister removes the service address from registry
 func (c *Client) Deregister(id string) error {
 	return c.Agent().ServiceDeregister(id)
+}
+
+func RegisterByConfig(srv string) (*Client, opentracing.Tracer, string, int, string) {
+	log.Info().Msg("Reading config...")
+	jsonFile, err := os.Open("config.json")
+	if err != nil {
+		log.Error().Msgf("Got error while reading config: %v", err)
+	}
+
+	defer jsonFile.Close()
+
+	byteValue, _ := ioutil.ReadAll(jsonFile)
+
+	var result map[string]string
+	json.Unmarshal([]byte(byteValue), &result)
+
+	log.Info().Msg("Successfull")
+
+	serv_port, _ := strconv.Atoi(result[srv + "Port"])
+	serv_ip := result[srv + "IP"]
+	mongoUrl := "mongodb://" + result["MongoAddress"]
+	log.Info().Msgf("Read target port: %v", serv_port)
+	log.Info().Msgf("Read consul address: %v", result["consulAddress"])
+	log.Info().Msgf("Read jaeger address: %v", result["jaegerAddress"])
+	var (
+		jaegeraddr = flag.String("jaegeraddr", result["jaegerAddress"], "Jaeger address")
+		consuladdr = flag.String("consuladdr", result["consulAddress"], "Consul address")
+	)
+	flag.Parse()
+
+	log.Info().Msgf("Initializing jaeger [service name: %v | host: %v]...", srv, *jaegeraddr)
+	tracer, err := tracing.Init(srv, *jaegeraddr)
+	if err != nil {
+		log.Panic().Msgf("Got error while initializing jaeger agent: %v", err)
+	}
+	log.Info().Msg("Jaeger agent initialized")
+
+	log.Info().Msgf("Initializing consul agent [host: %v]...", *consuladdr)
+	registry, err := NewClient(*consuladdr)
+	if err != nil {
+		log.Panic().Msgf("Got error while initializing consul agent: %v", err)
+	}
+	log.Info().Msg("Consul agent initialized")
+	return registry, tracer, serv_ip, serv_port, mongoUrl
 }

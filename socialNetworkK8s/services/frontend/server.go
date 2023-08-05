@@ -23,7 +23,6 @@ import (
 	"socialnetworkk8/dialer"
 	"socialnetworkk8/registry"
 	"socialnetworkk8/tls"
-	"socialnetworkk8/tracing"
 	"github.com/opentracing/opentracing-go"
 )
 
@@ -49,11 +48,6 @@ type FrontendSrv struct {
 	Tracer    opentracing.Tracer
 	Registry  *registry.Client
 	p         *Perf
-	uCounter  *tracing.Counter
-	iCounter  *tracing.Counter
-	cCounter  *tracing.Counter
-	hCounter  *tracing.Counter
-	tCounter  *tracing.Counter
 }
 
 // Run the server
@@ -63,46 +57,29 @@ func (s *FrontendSrv) Run() error {
 	}
 	log.Info().Msg("Initializing gRPC clients...")
 	// user client
-	userConn, err := dialer.Dial(
-		user.USER_SRV_NAME,
-		s.Registry.Client,
-		dialer.WithTracer(s.Tracer))
+	userConn, err := dialer.Dial(user.USER_SRV_NAME, s.Registry.Client, dialer.WithTracer(s.Tracer))
 	if err != nil {
 		return fmt.Errorf("dialer error: %v", err)
 	}
 	s.userc = userpb.NewUserClient(userConn)
 	// timeline client
-	tlConn, err := dialer.Dial(
-		timeline.TIMELINE_SRV_NAME,
-		s.Registry.Client,
-		dialer.WithTracer(s.Tracer))
+	tlConn, err := dialer.Dial(timeline.TIMELINE_SRV_NAME, s.Registry.Client, dialer.WithTracer(s.Tracer))
 	if err != nil {
 		return fmt.Errorf("dialer error: %v", err)
 	}
 	s.tlc = tlpb.NewTimelineClient(tlConn)
 	// home client
-	homeConn, err := dialer.Dial(
-		home.HOME_SRV_NAME,
-		s.Registry.Client,
-		dialer.WithTracer(s.Tracer))
+	homeConn, err := dialer.Dial(home.HOME_SRV_NAME, s.Registry.Client, dialer.WithTracer(s.Tracer))
 	if err != nil {
 		return fmt.Errorf("dialer error: %v", err)
 	}
 	s.homec = homepb.NewHomeClient(homeConn)
 	// compose client
-	composeConn, err := dialer.Dial(
-		compose.COMPOSE_SRV_NAME,
-		s.Registry.Client,
-		dialer.WithTracer(s.Tracer))
+	composeConn, err := dialer.Dial(compose.COMPOSE_SRV_NAME, s.Registry.Client, dialer.WithTracer(s.Tracer))
 	if err != nil {
 		return fmt.Errorf("dialer error: %v", err)
 	}
 	s.composec = composepb.NewComposeClient(composeConn)
-	s.uCounter = tracing.MakeCounter("Front-User")
-	s.iCounter = tracing.MakeCounter("User-Inner")
-	s.hCounter = tracing.MakeCounter("Front-Home")
-	s.tCounter = tracing.MakeCounter("Front-Timeline")
-	s.cCounter = tracing.MakeCounter("Front-Compose")
 	s.p = MakePerf("social-network-perf/k8s", "social-netowrk")
 	s.record = false
 
@@ -159,7 +136,6 @@ func (s *FrontendSrv) echoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *FrontendSrv) userHandler(w http.ResponseWriter, r *http.Request) {
-	t0 := time.Now()
 	if s.record {
 		defer s.p.TptTick(1.0)
 	}
@@ -174,10 +150,8 @@ func (s *FrontendSrv) userHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Check username and password
-	t1 := time.Now()
 	res, err := s.userc.Login(
 		r.Context(), &userpb.LoginRequest{Username: username,Password: password})
-	s.iCounter.AddTimeSince(t1)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -188,12 +162,9 @@ func (s *FrontendSrv) userHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	reply := map[string]interface{}{"message": str}
 	json.NewEncoder(w).Encode(reply)
-	s.uCounter.AddTimeSince(t0)
 }
 
 func (s *FrontendSrv) composeHandler(w http.ResponseWriter, r *http.Request) {
-	t0 := time.Now()
-	defer s.cCounter.AddTimeSince(t0)
 	if s.record {
 		defer s.p.TptTick(1.0)
 	}
@@ -263,14 +234,10 @@ func (s *FrontendSrv) composeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *FrontendSrv) timelineHandler(w http.ResponseWriter, r *http.Request) {
-	t0 := time.Now()
-	defer s.tCounter.AddTimeSince(t0)
 	s.timelineHandlerInner(w, r, false)
 }
 
 func (s *FrontendSrv) homeHandler(w http.ResponseWriter, r *http.Request) {
-	t0 := time.Now()
-	defer s.hCounter.AddTimeSince(t0)
 	s.timelineHandlerInner(w, r, true)
 }
 

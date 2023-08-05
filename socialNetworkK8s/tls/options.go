@@ -8,9 +8,10 @@ import  (
     "log"
     "os"
     "strings"
-
+	"time"
     "google.golang.org/grpc"
     "google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 )
 
 
@@ -137,4 +138,21 @@ func GetServerOpt() grpc.ServerOption {
 
 func GetHttpsOpt() *tls.Config {
     return httpsopt
+}
+
+func DefaultOpts() []grpc.ServerOption {
+	opts := []grpc.ServerOption{
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Timeout: 120 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			PermitWithoutStream: true,
+		}),
+	}
+
+	if tlsopt := GetServerOpt(); tlsopt != nil {
+		opts = append(opts, tlsopt)
+	}
+	return opts
+
 }

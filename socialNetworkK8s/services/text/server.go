@@ -1,20 +1,11 @@
 package text
 
 import (
-	"encoding/json"
-	"flag"
-	"io/ioutil"
-	"os"
-	"strconv"
-	"time"
 	"regexp"
 	"fmt"
 	"sync"
 	"net"
-	"net/http"
-	"net/http/pprof"
 	"github.com/google/uuid"
-	"github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
 	"socialnetworkk8/registry"
 	"socialnetworkk8/tune"
 	"socialnetworkk8/tls"
@@ -25,12 +16,10 @@ import (
 	userpb "socialnetworkk8/services/user/proto"
 	urlpb "socialnetworkk8/services/url/proto"
 	opentracing "github.com/opentracing/opentracing-go"
-	"socialnetworkk8/tracing"
 	"github.com/rs/zerolog/log"
 	"github.com/rs/zerolog"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 )
 
 const (
@@ -50,53 +39,12 @@ type TextSrv struct {
 	Tracer       opentracing.Tracer
 	Port         int
 	IpAddr       string
-	pCounter     *tracing.Counter
 }
 
 func MakeTextSrv() *TextSrv {
 	tune.Init()
-	log.Info().Msg("Reading config...")
-	jsonFile, err := os.Open("config.json")
-	if err != nil {
-		log.Error().Msgf("Got error while reading config: %v", err)
-	}
-	defer jsonFile.Close()
-	byteValue, _ := ioutil.ReadAll(jsonFile)
-	var result map[string]string
-	json.Unmarshal([]byte(byteValue), &result)
-	log.Info().Msg("Successfull")
-
-	serv_port, _ := strconv.Atoi(result["TextPort"])
-	serv_ip := result["TextIP"]
-	log.Info().Msgf("Read target port: %v", serv_port)
-	log.Info().Msgf("Read consul address: %v", result["consulAddress"])
-	log.Info().Msgf("Read jaeger address: %v", result["jaegerAddress"])
-	var (
-		jaegeraddr = flag.String("jaegeraddr", result["jaegerAddress"], "Jaeger address")
-		consuladdr = flag.String("consuladdr", result["consulAddress"], "Consul address")
-	)
-	flag.Parse()
-
-	log.Info().Msgf("Initializing jaeger [service name: %v | host: %v]...", "text", *jaegeraddr)
-	tracer, err := tracing.Init("text", *jaegeraddr)
-	if err != nil {
-		log.Panic().Msgf("Got error while initializing jaeger agent: %v", err)
-	}
-	log.Info().Msg("Jaeger agent initialized")
-
-	log.Info().Msgf("Initializing consul agent [host: %v]...", *consuladdr)
-	registry, err := registry.NewClient(*consuladdr)
-	if err != nil {
-		log.Panic().Msgf("Got error while initializing consul agent: %v", err)
-	}
-	log.Info().Msg("Consul agent initialized")
-	return &TextSrv{
-		Port:         serv_port,
-		IpAddr:       serv_ip,
-		Tracer:       tracer,
-		Registry:     registry,
-		pCounter:     tracing.MakeCounter("Process Text"),
-	}
+	registry, tracer, serv_ip, serv_port, _ := registry.RegisterByConfig("Text")
+	return &TextSrv{Port:serv_port, IpAddr:serv_ip, Tracer:tracer, Registry:registry}
 }
 
 // Run starts the server
@@ -107,52 +55,25 @@ func (tsrv *TextSrv) Run() error {
 
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	log.Info().Msg("Initializing gRPC clients...")
-	userConn, err := dialer.Dial(
-		user.USER_SRV_NAME,
-		tsrv.Registry.Client,
-		dialer.WithTracer(tsrv.Tracer))
+	userConn, err := dialer.Dial(user.USER_SRV_NAME, tsrv.Registry.Client, dialer.WithTracer(tsrv.Tracer))
 	if err != nil {
 		return fmt.Errorf("dialer error: %v", err)
 	}
 	tsrv.userc = userpb.NewUserClient(userConn)
-	urlConn, err := dialer.Dial(
-		url.URL_SRV_NAME,
-		tsrv.Registry.Client,
-		dialer.WithTracer(tsrv.Tracer))
+	urlConn, err := dialer.Dial(url.URL_SRV_NAME, tsrv.Registry.Client, dialer.WithTracer(tsrv.Tracer))
 	if err != nil {
 		return fmt.Errorf("dialer error: %v", err)
 	}
 	tsrv.urlc = urlpb.NewUrlClient(urlConn)
-
-	log.Info().Msg("Initializing gRPC Server...")
 	tsrv.uuid = uuid.New().String()
-	opts := []grpc.ServerOption{
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Timeout: 120 * time.Second,
-		}),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			PermitWithoutStream: true,
-		}),
-		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(tsrv.Tracer),
-		),
-	}
-	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
-		opts = append(opts, tlsopt)
-	}
-	grpcSrv := grpc.NewServer(opts...)
+	grpcSrv := grpc.NewServer(tls.DefaultOpts()...)
 	proto.RegisterTextServer(grpcSrv, tsrv)
 
 	// listener
-	log.Info().Msg("Initializing request listener ...")
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", tsrv.Port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
-	http.Handle("/pprof/cpu", http.HandlerFunc(pprof.Profile))
-	go func() {
-		log.Error().Msgf("Error ListenAndServe: %v", http.ListenAndServe(":5000", nil))
-	}()
 	err = tsrv.Registry.Register(TEXT_SRV_NAME, tsrv.uuid, tsrv.IpAddr, tsrv.Port)
 	if err != nil {
 		return fmt.Errorf("failed register: %v", err)
@@ -163,8 +84,6 @@ func (tsrv *TextSrv) Run() error {
 
 func (tsrv *TextSrv) ProcessText(
 		ctx context.Context, req *proto.ProcessTextRequest) (*proto.ProcessTextResponse, error) {
-	t0 := time.Now()
-	defer tsrv.pCounter.AddTimeSince(t0)
 	res := &proto.ProcessTextResponse{}
 	res.Ok = "No. "
 	if req.Text == "" {

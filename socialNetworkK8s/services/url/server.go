@@ -2,34 +2,23 @@ package url
 
 import (
 	"encoding/json"
-	"math/rand"
-	"flag"
-	"io/ioutil"
-	"os"
-	"strconv"
-	"time"
 	"fmt"
 	"strings"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"net"
-	"net/http"
-	"net/http/pprof"
 	"github.com/google/uuid"
-	"github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
 	"socialnetworkk8/registry"
 	"socialnetworkk8/tune"
 	"socialnetworkk8/services/cacheclnt"
 	"socialnetworkk8/tls"
 	"socialnetworkk8/services/url/proto"
 	opentracing "github.com/opentracing/opentracing-go"
-	"socialnetworkk8/tracing"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 	"github.com/bradfitz/gomemcache/memcache"
 )
 
@@ -42,20 +31,6 @@ const (
 )
 
 var urlPrefixL = len(URL_HOSTNAME)
-	
-var letterRunes = []rune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-
-func init() {
-    rand.Seed(time.Now().UnixNano())
-}
-
-func RandStringRunes(n int) string {
-    b := make([]rune, n)
-    for i := range b {
-        b[i] = letterRunes[rand.Intn(len(letterRunes))]
-    }
-    return string(b)
-}
 
 type UrlSrv struct {
 	proto.UnimplementedUrlServer 
@@ -66,51 +41,12 @@ type UrlSrv struct {
 	Tracer       opentracing.Tracer
 	Port         int
 	IpAddr       string
-	cCounter     *tracing.Counter
 }
 
 func MakeUrlSrv() *UrlSrv {
 	tune.Init()
-	log.Info().Msg("Reading config...")
-	jsonFile, err := os.Open("config.json")
-	if err != nil {
-		log.Error().Msgf("Got error while reading config: %v", err)
-	}
-	defer jsonFile.Close()
-	byteValue, _ := ioutil.ReadAll(jsonFile)
-	var result map[string]string
-	json.Unmarshal([]byte(byteValue), &result)
-	log.Info().Msg("Successfull")
-
-	serv_port, _ := strconv.Atoi(result["UrlPort"])
-	serv_ip := result["UrlIP"]
-	log.Info().Msgf("Read target port: %v", serv_port)
-	log.Info().Msgf("Read consul address: %v", result["consulAddress"])
-	log.Info().Msgf("Read jaeger address: %v", result["jaegerAddress"])
-	var (
-		jaegeraddr = flag.String("jaegeraddr", result["jaegerAddress"], "Jaeger address")
-		consuladdr = flag.String("consuladdr", result["consulAddress"], "Consul address")
-	)
-	flag.Parse()
-
-	log.Info().Msgf("Initializing jaeger [service name: %v | host: %v]...", "url", *jaegeraddr)
-	tracer, err := tracing.Init("url", *jaegeraddr)
-	if err != nil {
-		log.Panic().Msgf("Got error while initializing jaeger agent: %v", err)
-	}
-	log.Info().Msg("Jaeger agent initialized")
-
-	log.Info().Msgf("Initializing consul agent [host: %v]...", *consuladdr)
-	registry, err := registry.NewClient(*consuladdr)
-	if err != nil {
-		log.Panic().Msgf("Got error while initializing consul agent: %v", err)
-	}
-	log.Info().Msg("Consul agent initialized")
-	log.Info().Msg("Start cache and DB connections")
+	registry, tracer, serv_ip, serv_port, mongoUrl := registry.RegisterByConfig("Url")
 	cachec := cacheclnt.MakeCacheClnt() 
-
-	mongoUrl := "mongodb://" + result["MongoAddress"]
-	log.Info().Msgf("Read database URL: %v", mongoUrl)
 	mongoClient, err := mongo.Connect(
 		context.Background(), options.Client().ApplyURI(mongoUrl).SetMaxPoolSize(2048))
 	if err != nil {
@@ -118,18 +54,8 @@ func MakeUrlSrv() *UrlSrv {
 	}
 	collection := mongoClient.Database("socialnetwork").Collection("url")
 	indexModel := mongo.IndexModel{Keys: bson.D{{"shorturl", 1}}}
-	name, err := collection.Indexes().CreateOne(context.TODO(), indexModel)
-	log.Info().Msgf("Name of index created: %v", name)
-	log.Info().Msg("New mongo session successfull...")
-	return &UrlSrv{
-		Port:         serv_port,
-		IpAddr:       serv_ip,
-		Tracer:       tracer,
-		Registry:     registry,
-		cachec:       cachec,
-		mongoCo:      collection,
-		cCounter:     tracing.MakeCounter("Compose-Url"),
-	}
+	collection.Indexes().CreateOne(context.TODO(), indexModel)
+	return &UrlSrv{Port:serv_port, IpAddr:serv_ip, Tracer:tracer, Registry:registry, cachec:cachec,	mongoCo:collection}
 }
 
 // Run starts the server
@@ -137,37 +63,16 @@ func (urlsrv *UrlSrv) Run() error {
 	if urlsrv.Port == 0 {
 		return fmt.Errorf("server port must be set")
 	}
-
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	log.Info().Msg("Initializing gRPC Server...")
 	urlsrv.uuid = uuid.New().String()
-	opts := []grpc.ServerOption{
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Timeout: 120 * time.Second,
-		}),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			PermitWithoutStream: true,
-		}),
-		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(urlsrv.Tracer),
-		),
-	}
-	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
-		opts = append(opts, tlsopt)
-	}
-	grpcSrv := grpc.NewServer(opts...)
+	grpcSrv := grpc.NewServer(tls.DefaultOpts()...)
 	proto.RegisterUrlServer(grpcSrv, urlsrv)
 
 	// listener
-	log.Info().Msg("Initializing request listener ...")
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", urlsrv.Port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
-	http.Handle("/pprof/cpu", http.HandlerFunc(pprof.Profile))
-	go func() {
-		log.Error().Msgf("Error ListenAndServe: %v", http.ListenAndServe(":5000", nil))
-	}()
 	err = urlsrv.Registry.Register(URL_SRV_NAME, urlsrv.uuid, urlsrv.IpAddr, urlsrv.Port)
 	if err != nil {
 		return fmt.Errorf("failed register: %v", err)
@@ -179,8 +84,6 @@ func (urlsrv *UrlSrv) Run() error {
 
 func (urlsrv *UrlSrv) ComposeUrls(
 		ctx context.Context, req *proto.ComposeUrlsRequest) (*proto.ComposeUrlsResponse, error) {
-	t0 := time.Now()
-	defer urlsrv.cCounter.AddTimeSince(t0)
 	log.Debug().Msgf("Received compose request %v", req)
 	nUrls := len(req.Extendedurls)
 	res := &proto.ComposeUrlsResponse{}

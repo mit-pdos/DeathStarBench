@@ -3,10 +3,6 @@ package user
 import (
 	"encoding/json"
 	"crypto/sha256"
-	"flag"
-	"io/ioutil"
-	"os"
-	"strconv"
 	"time"
 	"fmt"
 	"math/rand"
@@ -15,8 +11,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"net"
 	"sync"
-	"net/http"
-	"net/http/pprof"
 	"github.com/google/uuid"
 	//"github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
 	"socialnetworkk8/registry"
@@ -30,7 +24,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 	"github.com/bradfitz/gomemcache/memcache"
 )
 
@@ -54,59 +47,14 @@ type UserSrv struct {
 	sid          int32 // sid is a random number between 0 and 2^30
 	ucount       int32 //This server may overflow with over 2^31 users
     mu           sync.Mutex
-	dbCounter    *tracing.Counter
 	cacheCounter *tracing.Counter
-	loginCounter *tracing.Counter
 	checkCounter *tracing.Counter
 }
 
 func MakeUserSrv() *UserSrv {
 	tune.Init()
-	log.Info().Msg("Reading config...")
-	jsonFile, err := os.Open("config.json")
-	if err != nil {
-		log.Error().Msgf("Got error while reading config: %v", err)
-	}
-
-	defer jsonFile.Close()
-
-	byteValue, _ := ioutil.ReadAll(jsonFile)
-
-	var result map[string]string
-	json.Unmarshal([]byte(byteValue), &result)
-
-	log.Info().Msg("Successfull")
-
-	serv_port, _ := strconv.Atoi(result["UserPort"])
-	serv_ip := result["UserIP"]
-
-	log.Info().Msgf("Read target port: %v", serv_port)
-	log.Info().Msgf("Read consul address: %v", result["consulAddress"])
-	log.Info().Msgf("Read jaeger address: %v", result["jaegerAddress"])
-	var (
-		jaegeraddr = flag.String("jaegeraddr", result["jaegerAddress"], "Jaeger address")
-		consuladdr = flag.String("consuladdr", result["consulAddress"], "Consul address")
-	)
-	flag.Parse()
-
-	log.Info().Msgf("Initializing jaeger [service name: %v | host: %v]...", "user", *jaegeraddr)
-	tracer, err := tracing.Init("user", *jaegeraddr)
-	if err != nil {
-		log.Panic().Msgf("Got error while initializing jaeger agent: %v", err)
-	}
-	log.Info().Msg("Jaeger agent initialized")
-
-	log.Info().Msgf("Initializing consul agent [host: %v]...", *consuladdr)
-	registry, err := registry.NewClient(*consuladdr)
-	if err != nil {
-		log.Panic().Msgf("Got error while initializing consul agent: %v", err)
-	}
-	log.Info().Msg("Consul agent initialized")
-	log.Info().Msg("Start cache and DB connections")
+	registry, tracer, serv_ip, serv_port, mongoUrl := registry.RegisterByConfig("User")
 	cachec := cacheclnt.MakeCacheClnt() 
-
-	mongoUrl := "mongodb://" + result["MongoAddress"]
-	log.Info().Msgf("Read database URL: %v", mongoUrl)
 	mongoClient, err := mongo.Connect(
 		context.Background(), options.Client().ApplyURI(mongoUrl).SetMaxPoolSize(2048))
 	if err != nil {
@@ -114,22 +62,9 @@ func MakeUserSrv() *UserSrv {
 	}
 	collection := mongoClient.Database("socialnetwork").Collection("user")
 	indexModel := mongo.IndexModel{Keys: bson.D{{"username", 1}}}
-	name, err := collection.Indexes().CreateOne(context.TODO(), indexModel)
-	log.Info().Msgf("Name of index created: %v", name)
-	log.Info().Msg("New mongo session successfull...")
-	return &UserSrv{
-		Port:         serv_port,
-		IpAddr:       serv_ip,
-		Tracer:       tracer,
-		Registry:     registry,
-		cachec:       cachec,
-		mclnt:        mongoClient,
-		mongoCo:      collection,
-		dbCounter:    tracing.MakeCounter("DB"),
-		cacheCounter: tracing.MakeCounter("Cache"),
-		loginCounter: tracing.MakeCounter("Login"),
-		checkCounter: tracing.MakeCounter("Check-User"),
-	}
+	collection.Indexes().CreateOne(context.TODO(), indexModel)
+	return &UserSrv{Port: serv_port, IpAddr: serv_ip, Tracer: tracer, Registry: registry, cachec: cachec,
+		mclnt: mongoClient, mongoCo: collection, cacheCounter: tracing.MakeCounter("Cache"), checkCounter: tracing.MakeCounter("Check-User")}
 }
 
 // Run starts the server
@@ -139,24 +74,7 @@ func (usrv *UserSrv) Run() error {
 	}
 	usrv.uuid = uuid.New().String()
 	usrv.sid = rand.Int31n(536870912) // 2^29
-	opts := []grpc.ServerOption{
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Timeout: 120 * time.Second,
-		}),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			PermitWithoutStream: true,
-		}),
-		//grpc.UnaryInterceptor(
-		//	otgrpc.OpenTracingServerInterceptor(usrv.Tracer),
-		//),
-	}
-
-	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
-		opts = append(opts, tlsopt)
-	}
-
-	grpcSrv := grpc.NewServer(opts...)
-
+	grpcSrv := grpc.NewServer(tls.DefaultOpts()...)
 	proto.RegisterUserServer(grpcSrv, usrv)
 
 	// listener
@@ -165,11 +83,6 @@ func (usrv *UserSrv) Run() error {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
 
-	http.Handle("/pprof/cpu", http.HandlerFunc(pprof.Profile))
-	go func() {
-		log.Error().Msgf("Error ListenAndServe: %v", http.ListenAndServe(":5000", nil))
-	}()
-
 	err = usrv.Registry.Register(USER_SRV_NAME, usrv.uuid, usrv.IpAddr, usrv.Port)
 	if err != nil {
 		return fmt.Errorf("failed register: %v", err)
@@ -177,12 +90,6 @@ func (usrv *UserSrv) Run() error {
 	log.Info().Msg("Successfully registered in consul")
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	return grpcSrv.Serve(lis)
-}
-
-// Shutdown cleans up any processes
-func (usrv *UserSrv) Shutdown() {
-	usrv.mclnt.Disconnect(context.Background())
-	usrv.Registry.Deregister(usrv.uuid)
 }
 
 func (usrv *UserSrv) CheckUser(
@@ -245,7 +152,6 @@ func (usrv *UserSrv) RegisterUser(
 
 func (usrv *UserSrv) Login(
 		ctx context.Context, req *proto.LoginRequest) (*proto.UserResponse, error) {
-	t0 := time.Now()
 	log.Debug().Msgf("User login with %v: %v", usrv.sid, req)
 	res := &proto.UserResponse{}
 	res.Ok = "Login Failure."
@@ -257,7 +163,6 @@ func (usrv *UserSrv) Login(
 		res.Ok = USER_QUERY_OK
 		res.Userid = user.Userid
 	}
-	usrv.loginCounter.AddTimeSince(t0)
 	return res, nil
 }
 
@@ -272,9 +177,7 @@ func (usrv *UserSrv) getUserbyUname(ctx context.Context, username string) (*User
 			return nil, err
 		}
 		log.Debug().Msgf("User %v cache miss", key)
-		t1 := time.Now()
 		err = usrv.mongoCo.FindOne(context.TODO(), &bson.M{"username": username}).Decode(&user)
-		usrv.dbCounter.AddTimeSince(t1)
 		if  err != nil {
 			if err == mongo.ErrNoDocuments {
 				return nil, nil
