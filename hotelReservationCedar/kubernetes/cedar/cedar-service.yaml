@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kompose.cmd: kompose convert
+    kompose.version: 1.22.0 (955b78124)
+  creationTimestamp: null
+  labels:
+    io.kompose.service: cedar 
+  name: cedar
+spec:
+  ports:
+    - name: "8180"
+      port: 8180
+      targetPort: 8180
+  selector:
+    io.kompose.service: cedar
+status:
+  loadBalancer: {}
