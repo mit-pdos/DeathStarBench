@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+option go_package = "./services/cached/proto";
+
+service Cached {
+  rpc Get(GetRequest) returns (GetResult);
+  rpc Set(SetRequest) returns (SetResult);
+}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResult {
+  bool ok = 1;
+  bytes val = 2;
+}
+
+message SetRequest {
+  string key = 1;
+  bytes val = 2;
+}
+
+message SetResult {
+  bool ok = 1;
+}
