@@ -4,7 +4,6 @@ import (
 	// "encoding/json"
 	"fmt"
 	log2 "log"
-	"math/rand"
 	"net/rpc"
 	"strconv"
 	"sync"
@@ -40,44 +39,46 @@ const (
 	maxSearchResults = 5
 )
 
-const (
-	N_INDEX = 1000
-)
-
-type safeIndex struct {
-	mu     sync.Mutex
-	geoidx *geoindex.ClusteringIndex
+type GeoIndexes struct {
+	mu      sync.Mutex
+	indexes chan *geoindex.ClusteringIndex
 }
 
-func makeSafeIndex(session *mgo.Session) *safeIndex {
-	return &safeIndex{
-		geoidx: newGeoIndex(session),
+func newGeoIndexes(n int, session *mgo.Session) *GeoIndexes {
+	log2.Printf("%v geo indexes", n)
+	idxs := &GeoIndexes{
+		indexes: make(chan *geoindex.ClusteringIndex, n),
 	}
+	for i := 0; i < n; i++ {
+		idxs.indexes <- newGeoIndex(session)
+	}
+	return idxs
 }
 
-func (si *safeIndex) KNN(center *geoindex.GeoPoint) []geoindex.Point {
-	si.mu.Lock()
-	defer si.mu.Unlock()
-
-	return si.geoidx.KNearest(
+func (gi GeoIndexes) KNN(center *geoindex.GeoPoint) []geoindex.Point {
+	idx := <-gi.indexes
+	points := idx.KNearest(
 		center,
 		maxSearchResults,
 		geoindex.Km(maxSearchRadius), func(p geoindex.Point) bool {
 			return true
 		},
 	)
+	gi.indexes <- idx
+	return points
 }
 
 // Server implements the geo service
 type Server struct {
 	pb.UnimplementedGeoServer
-	indexes []*safeIndex
-	uuid    string
+	idxs *GeoIndexes
+	uuid string
 
 	Registry     *registry.Client
 	Tracer       opentracing.Tracer
 	Port         int
 	IpAddr       string
+	NIndex       int
 	MongoSession *mgo.Session
 }
 
@@ -89,12 +90,7 @@ func (s *Server) Run() error {
 
 	zerolog.SetGlobalLevel(zerolog.Disabled)
 
-	if len(s.indexes) == 0 {
-		s.indexes = make([]*safeIndex, 0, N_INDEX)
-		for i := 0; i < N_INDEX; i++ {
-			s.indexes = append(s.indexes, makeSafeIndex(s.MongoSession))
-		}
-	}
+	s.idxs = newGeoIndexes(s.NIndex, s.MongoSession)
 
 	s.uuid = uuid.New().String()
 
@@ -217,9 +213,7 @@ func (s *Server) getNearbyPoints(ctx context.Context, lat, lon float64) []geoind
 		Plon: lon,
 	}
 
-	r := rand.Int() % N_INDEX
-
-	return s.indexes[r].KNN(center)
+	return s.idxs.KNN(center)
 }
 
 // newGeoIndex returns a geo index with points loaded

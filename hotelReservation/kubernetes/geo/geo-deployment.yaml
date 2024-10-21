@@ -39,6 +39,8 @@ spec:
             limits:
               cpu: 4000m
           env:
+            - name: N_INDEX 
+              value: "1000"
             - name: POD_IP_ADDR
               valueFrom:
                 fieldRef:

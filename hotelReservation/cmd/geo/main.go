@@ -45,6 +45,15 @@ func main() {
 		log.Fatal().Msgf("No POD_IP_ADDR supplied")
 	}
 
+	n_index_str := os.Getenv("N_INDEX")
+	if n_index_str == "" {
+		log.Fatal().Msgf("No N_INDEX supplied")
+	}
+	n_index, err := strconv.Atoi(n_index_str)
+	if err != nil {
+		log.Fatal().Msgf("Can't convert nindex: %v", err)
+	}
+
 	log.Info().Msgf("Read target port: %v", serv_port)
 	log.Info().Msgf("Read consul address: %v", result["consulAddress"])
 	log.Info().Msgf("Read jaeger address: %v", result["jaegerAddress"])
@@ -77,6 +86,7 @@ func main() {
 		Tracer:       tracer,
 		Registry:     registry,
 		MongoSession: mongo_session,
+		NIndex:       n_index,
 	}
 
 	log.Info().Msg("Starting server...")
