@@ -33,6 +33,7 @@ spec:
           name: hotel-reserv-search
           ports:
             - containerPort: 8082
+            - containerPort: 9998
           resources:
             requests:
               cpu: 2900m

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	log2 "log"
 	"math/rand"
+	"net/rpc"
+	"strconv"
 	"sync"
 
 	"gopkg.in/mgo.v2"
@@ -21,6 +23,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
 	"github.com/harlow/go-micro-services/registry"
 	pb "github.com/harlow/go-micro-services/services/geo/proto"
+	"github.com/harlow/go-micro-services/shardclnt"
 	"github.com/harlow/go-micro-services/tls"
 	"github.com/mit-pdos/go-geoindex"
 	opentracing "github.com/opentracing/opentracing-go"
@@ -153,6 +156,8 @@ func (s *Server) Run() error {
 	}
 	log.Info().Msg("Successfully registered in consul")
 
+	go s.registerWithServers()
+
 	return srv.Serve(lis)
 }
 
@@ -178,6 +183,29 @@ func (s *Server) Nearby(ctx context.Context, req *pb.Request) (*pb.Result, error
 	}
 
 	return res, nil
+}
+
+func (s *Server) registerWithServers() {
+	for _, svc := range []string{"search"} {
+		for {
+			log2.Printf("Dial server (%v), register IP:%v PORT:%v", svc, s.IpAddr, s.Port)
+			c, err := rpc.DialHTTP("tcp", svc+shardclnt.SHARD_REGISTER_PORT)
+			if err != nil {
+				log2.Printf("Error dial server (%v): %v", svc, err)
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			log2.Printf("Success dial server (%v)", svc)
+			req := &shardclnt.RegisterShardRequest{s.IpAddr + ":" + strconv.Itoa(s.Port)}
+			res := &shardclnt.RegisterShardResponse{}
+			err = c.Call("ShardClntWrapper.RegisterShard", req, res)
+			if err != nil {
+				log2.Fatalf("Error Call RegisterShard: %v", err)
+			}
+			log2.Printf("Success register with server (%v)", svc)
+			break
+		}
+	}
 }
 
 func (s *Server) getNearbyPoints(ctx context.Context, lat, lon float64) []geoindex.Point {

@@ -161,7 +161,7 @@ func (s *Server) registerWithServers() {
 			res := &cacheclnt.RegisterCacheResponse{}
 			err = c.Call("CacheClnt.RegisterCache", req, res)
 			if err != nil {
-				log2.Fatalf("Error Call RegisterCache: %v", err)
+				log2.Fatalf("Error Call RegisterShard: %v", err)
 			}
 			break
 		}

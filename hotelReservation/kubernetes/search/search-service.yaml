@@ -13,6 +13,9 @@ spec:
     - name: "8082"
       port: 8082
       targetPort: 8082
+    - name: "9998"
+      port: 9998
+      targetPort: 9998
   selector:
     io.kompose.service: search
 status:

@@ -38,5 +38,10 @@ spec:
               cpu: 1900m
             limits:
               cpu: 4000m
+          env:
+            - name: POD_IP_ADDR
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
       restartPolicy: Always
 status: {}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	ll "log"
 	"strconv"
 
 	"github.com/rs/zerolog/log"
@@ -17,6 +18,7 @@ type point struct {
 func initializeDatabase(url string) *mgo.Session {
 	session, err := mgo.Dial(url)
 	if err != nil {
+		ll.Printf("Error mongo dial: %v", err)
 		log.Panic().Msg(err.Error())
 	}
 	// defer session.Close()

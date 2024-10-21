@@ -3,6 +3,7 @@ package search
 import (
 	// "encoding/json"
 	"fmt"
+	"sync"
 	// F"io/ioutil"
 	"net"
 
@@ -19,6 +20,7 @@ import (
 	geo "github.com/harlow/go-micro-services/services/geo/proto"
 	rate "github.com/harlow/go-micro-services/services/rate/proto"
 	pb "github.com/harlow/go-micro-services/services/search/proto"
+	"github.com/harlow/go-micro-services/shardclnt"
 	"github.com/harlow/go-micro-services/tls"
 	opentracing "github.com/opentracing/opentracing-go"
 	context "golang.org/x/net/context"
@@ -31,8 +33,11 @@ const name = "srv-search"
 // Server implments the search service
 type Server struct {
 	pb.UnimplementedSearchServer
-	geoClient  geo.GeoClient
+	geoClients *shardclnt.ShardClnt[geo.GeoClient]
 	rateClient rate.RateClient
+
+	idx int
+	mu  sync.Mutex
 
 	Tracer   opentracing.Tracer
 	Port     int
@@ -68,13 +73,14 @@ func (s *Server) Run() error {
 		opts = append(opts, tlsopt)
 	}
 
+	// init grpc clients
+	if err := s.initGeoClients("srv-geo"); err != nil {
+		return err
+	}
+
 	srv := grpc.NewServer(opts...)
 	pb.RegisterSearchServer(srv, s)
 
-	// init grpc clients
-	if err := s.initGeoClient("srv-geo"); err != nil {
-		return err
-	}
 	if err := s.initRateClient("srv-rate"); err != nil {
 		return err
 	}
@@ -111,17 +117,22 @@ func (s *Server) Shutdown() {
 	s.Registry.Deregister(s.uuid)
 }
 
-func (s *Server) initGeoClient(name string) error {
+func (s *Server) dialGeoClnt(addr string) *geo.GeoClient {
 	conn, err := dialer.Dial(
-		name,
-		s.Registry.Client,
+		addr,
+		nil, //		s.Registry.Client,
 		dialer.WithTracer(s.Tracer),
 		//		dialer.WithBalancer(s.Registry.Client),
 	)
 	if err != nil {
-		return fmt.Errorf("dialer error: %v", err)
+		log.Fatal().Msgf("Err Dial client %v: %v", addr, err)
 	}
-	s.geoClient = geo.NewGeoClient(conn)
+	clnt := geo.NewGeoClient(conn)
+	return &clnt
+}
+
+func (s *Server) initGeoClients(name string) error {
+	s.geoClients = shardclnt.NewShardClnt[geo.GeoClient](s.dialGeoClnt)
 	return nil
 }
 
@@ -147,7 +158,11 @@ func (s *Server) Nearby(ctx context.Context, req *pb.NearbyRequest) (*pb.SearchR
 	log.Trace().Msgf("nearby lat = %f", req.Lat)
 	log.Trace().Msgf("nearby lon = %f", req.Lon)
 
-	nearby, err := s.geoClient.Nearby(ctx, &geo.Request{
+	clnt, err := s.geoClients.GetRR()
+	if err != nil {
+		log.Fatal().Msgf("Can't get RR geoClient: %v", err)
+	}
+	nearby, err := (*clnt).Nearby(ctx, &geo.Request{
 		Lat: req.Lat,
 		Lon: req.Lon,
 	})

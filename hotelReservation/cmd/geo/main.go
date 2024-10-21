@@ -40,7 +40,10 @@ func main() {
 	log.Info().Msg("Successfull")
 
 	serv_port, _ := strconv.Atoi(result["GeoPort"])
-	serv_ip := result["GeoIP"]
+	serv_ip := os.Getenv("POD_IP_ADDR")
+	if serv_ip == "" {
+		log.Fatal().Msgf("No POD_IP_ADDR supplied")
+	}
 
 	log.Info().Msgf("Read target port: %v", serv_port)
 	log.Info().Msgf("Read consul address: %v", result["consulAddress"])
