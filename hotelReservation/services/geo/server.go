@@ -182,7 +182,7 @@ func (s *Server) Nearby(ctx context.Context, req *pb.Request) (*pb.Result, error
 }
 
 func (s *Server) registerWithServers() {
-	for _, svc := range []string{"search"} {
+	for _, svc := range []string{"search", "frontend"} {
 		for {
 			log2.Printf("Dial server (%v), register IP:%v PORT:%v", svc, s.IpAddr, s.Port)
 			c, err := rpc.DialHTTP("tcp", svc+shardclnt.SHARD_REGISTER_PORT)

@@ -18,6 +18,7 @@ import (
 	"github.com/harlow/go-micro-services/registry"
 	profile "github.com/harlow/go-micro-services/services/profile/proto"
 	search "github.com/harlow/go-micro-services/services/search/proto"
+	"github.com/harlow/go-micro-services/shardclnt"
 	"github.com/harlow/go-micro-services/tls"
 	"github.com/harlow/go-micro-services/tracing"
 	"github.com/opentracing/opentracing-go"
@@ -30,7 +31,7 @@ type Server struct {
 	recommendationClient recommendation.RecommendationClient
 	userClient           user.UserClient
 	reservationClient    reservation.ReservationClient
-	geoClient            geo.GeoClient
+	geoClients           *shardclnt.ShardClnt[geo.GeoClient]
 	IpAddr               string
 	Port                 int
 	record               bool
@@ -176,17 +177,22 @@ func (s *Server) initReservation(name string) error {
 	return nil
 }
 
-func (s *Server) initGeo(name string) error {
+func (s *Server) dialGeoClnt(addr string) *geo.GeoClient {
 	conn, err := dialer.Dial(
-		name,
-		s.Registry.Client,
+		addr,
+		nil, //		s.Registry.Client,
 		dialer.WithTracer(s.Tracer),
 		//		dialer.WithBalancer(s.Registry.Client),
 	)
 	if err != nil {
-		return fmt.Errorf("dialer error: %v", err)
+		log.Fatal().Msgf("Err Dial client %v: %v", addr, err)
 	}
-	s.geoClient = geo.NewGeoClient(conn)
+	clnt := geo.NewGeoClient(conn)
+	return &clnt
+}
+
+func (s *Server) initGeo(name string) error {
+	s.geoClients = shardclnt.NewShardClnt[geo.GeoClient](s.dialGeoClnt)
 	return nil
 }
 
@@ -461,7 +467,11 @@ func (s *Server) geoHandler(w http.ResponseWriter, r *http.Request) {
 	Lon, _ := strconv.ParseFloat(sLon, 32)
 	lon := float32(Lon)
 
-	_, err := s.geoClient.Nearby(ctx, &geo.Request{
+	clnt, err := s.geoClients.GetRR()
+	if err != nil {
+		log.Fatal().Msgf("Can't get RR geoClient: %v", err)
+	}
+	_, err = (*clnt).Nearby(ctx, &geo.Request{
 		Lat: lat,
 		Lon: lon,
 	})
