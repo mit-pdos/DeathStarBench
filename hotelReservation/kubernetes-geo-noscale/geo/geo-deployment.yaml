@@ -41,6 +41,10 @@ spec:
           env:
             - name: N_INDEX 
               value: "1000"
+            - name: SEARCH_RADIUS 
+              value: "10"
+            - name: N_RESULTS 
+              value: "5"
             - name: POD_IP_ADDR
               valueFrom:
                 fieldRef:

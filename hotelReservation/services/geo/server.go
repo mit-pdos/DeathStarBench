@@ -34,9 +34,10 @@ import (
 )
 
 const (
-	name             = "srv-geo"
-	maxSearchRadius  = 10
-	maxSearchResults = 5
+	name = "srv-geo"
+
+// maxSearchRadius  = 10
+// maxSearchResults = 5
 )
 
 type GeoIndexes struct {
@@ -55,12 +56,12 @@ func newGeoIndexes(n int, session *mgo.Session) *GeoIndexes {
 	return idxs
 }
 
-func (gi GeoIndexes) KNN(center *geoindex.GeoPoint) []geoindex.Point {
+func (gi GeoIndexes) KNN(center *geoindex.GeoPoint, searchRadius float64, nSearchResults int) []geoindex.Point {
 	idx := <-gi.indexes
 	points := idx.KNearest(
 		center,
-		maxSearchResults,
-		geoindex.Km(maxSearchRadius), func(p geoindex.Point) bool {
+		nSearchResults,
+		geoindex.Km(searchRadius), func(p geoindex.Point) bool {
 			return true
 		},
 	)
@@ -79,6 +80,8 @@ type Server struct {
 	Port         int
 	IpAddr       string
 	NIndex       int
+	SearchRadius int
+	NResults     int
 	MongoSession *mgo.Session
 }
 
@@ -87,6 +90,7 @@ func (s *Server) Run() error {
 	if s.Port == 0 {
 		return fmt.Errorf("server port must be set")
 	}
+	log2.Printf("%v geo indexes searchRadius %v nResults %v", s.NIndex, s.SearchRadius, s.NResults)
 
 	zerolog.SetGlobalLevel(zerolog.Disabled)
 
@@ -213,7 +217,7 @@ func (s *Server) getNearbyPoints(ctx context.Context, lat, lon float64) []geoind
 		Plon: lon,
 	}
 
-	return s.idxs.KNN(center)
+	return s.idxs.KNN(center, float64(s.SearchRadius), s.NResults)
 }
 
 // newGeoIndex returns a geo index with points loaded

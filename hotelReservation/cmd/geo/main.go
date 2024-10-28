@@ -53,6 +53,22 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("Can't convert nindex: %v", err)
 	}
+	searchRadiusStr := os.Getenv("SEARCH_RADIUS")
+	if searchRadiusStr == "" {
+		log.Fatal().Msgf("No search radius supplied")
+	}
+	searchRadius, err := strconv.Atoi(searchRadiusStr)
+	if err != nil {
+		log.Fatal().Msgf("Can't convert searchRadius: %v", err)
+	}
+	nResultsStr := os.Getenv("N_RESULTS")
+	if nResultsStr == "" {
+		log.Fatal().Msgf("No search radius supplied")
+	}
+	nResults, err := strconv.Atoi(nResultsStr)
+	if err != nil {
+		log.Fatal().Msgf("Can't convert searchRadius: %v", err)
+	}
 
 	log.Info().Msgf("Read target port: %v", serv_port)
 	log.Info().Msgf("Read consul address: %v", result["consulAddress"])
@@ -87,6 +103,8 @@ func main() {
 		Registry:     registry,
 		MongoSession: mongo_session,
 		NIndex:       n_index,
+		SearchRadius: searchRadius,
+		NResults:     nResults,
 	}
 
 	log.Info().Msg("Starting server...")
