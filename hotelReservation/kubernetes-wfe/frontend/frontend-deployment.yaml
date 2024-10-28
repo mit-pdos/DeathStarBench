@@ -33,6 +33,7 @@ spec:
           name: hotel-reserv-frontend
           ports:
             - containerPort: 5000
+            - containerPort: 9998
           resources:
             requests:
               cpu: 2900m

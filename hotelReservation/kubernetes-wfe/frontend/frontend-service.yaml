@@ -13,6 +13,9 @@ spec:
     - name: "5000"
       port: 5000
       targetPort: 5000
+    - name: "9998"
+      port: 9998
+      targetPort: 9998
   selector:
     io.kompose.service: frontend
 status:
